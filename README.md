@@ -12,8 +12,9 @@ batana 生态（棒球打击动作捕捉 / 分析 / 评价）的云端管理平�
 
 - **Next.js（App Router）+ TypeScript** — 页面与服务端 API
 - **Postgres（Neon）** — 会话/指标云存储，schema 对齐 session-schema
+- **Cloudflare R2** — 对象存储：会话视频与模型工件（预签名 URL 直传）
 - **Vercel** — 部署
-- Recharts / ECharts — 图表；Clerk 或 Auth.js — 认证（选型待定）
+- Recharts / ECharts — 图表；OIDC（Clerk 或 Auth.js，可替换实现）— 认证（选型待定）
 
 ## 目录结构
 
