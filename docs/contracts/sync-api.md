@@ -1,12 +1,12 @@
 # sync-api — 云端同步接口契约
 
-> 版本：1.0-draft（2026-09-17）· 归属仓库：batana-web · 消费方：batana-gui、batana-pi
+> 版本：1.0（2026-09-17，稳定版）· 归属仓库：batana-web · 消费方：batana-gui、batana-pi
 >
 > 契约变更遵循主仓 `docs/versioning.md`：主版本不变则向后兼容（字段只增不改），破坏性变更升主版本并保留旧版本至少一个 combo 周期。
 
 ## 1. 概述
 
-sync-api 是 gui / pi 端与 batana-web 之间的 REST 接口，覆盖：**设备注册与认证、视频带外上传、会话上传、会话查询、趋势聚合查询、模型工件分发**。会话数据体与 batana-core 定义的 **session-schema**（1.0-draft）对齐，请求体直接内嵌 session 结构，不做二次包装。
+sync-api 是 gui / pi 端与 batana-web 之间的 REST 接口，覆盖：**设备注册与认证、视频带外上传、会话上传、会话查询、趋势聚合查询、模型工件分发**。会话数据体与 batana-core 定义的 **session-schema**（1.0）对齐，请求体直接内嵌 session 结构，不做二次包装。
 
 本契约承担两项带外职责：
 
@@ -204,7 +204,7 @@ Authorization: Bearer <access_token>
 
 ### POST /api/v1/sessions
 
-上传一次挥棒会话。**body 直接内嵌 session-schema 结构**（1.0-draft），字段与 batana-core 定义逐一对齐；契约侧字段只增不改。上传为**幂等**操作：`meta.session_id` 重复时返回 409，不覆盖已有数据，响应 body 携带已存记录的 `content_hash`（服务端对规范化 session JSON 计算的 SHA256），客户端据此比对本地内容是否一致——一致则视为成功，不一致属冲突须人工处理。
+上传一次挥棒会话。**body 直接内嵌 session-schema 结构**（1.0），字段与 batana-core 定义逐一对齐；契约侧字段只增不改。上传为**幂等**操作：`meta.session_id` 重复时返回 409，不覆盖已有数据，响应 body 携带已存记录的 `content_hash`（服务端对规范化 session JSON 计算的 SHA256），客户端据此比对本地内容是否一致——一致则视为成功，不一致属冲突须人工处理。
 
 **请求体（顶层）：**
 
@@ -215,16 +215,18 @@ Authorization: Bearer <access_token>
 | `video` | object | 否 | 视频引用（带外上传后回填；standard-imu 档位无此字段） |
 | `pose2d` | object | 否 | 2D 姿态序列（standard-vision / pro-fusion / pro-stereo / max 档位出现） |
 | `imu` | object | 否 | 棒尾 IMU 序列（standard-imu / pro-fusion / max 档位出现） |
+| `calibration` | object | 否 | 相机标定（pro-stereo / max 双目档位出现），结构同 session-schema 的 `calibration`，含独立演进的 `format_version` |
 | `phases` | object | 否 | 阶段分割（能力 `phase_split` 产出时出现） |
-| `metrics` | object | 是 | 评分与指标 |
+| `metrics` | object | 是 | 评分与指标（上传必填；本地仅采集未分析时可缺失，与 session-schema 裁决一致） |
 | `extensions` | object | 否 | 预留扩展位（3D 姿态等实验字段先进此处，稳定后升版转正） |
 
 **`meta`：**
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `session_id` | string | 是 | 客户端生成的全局唯一会话 id（ULID/UUID） |
+| `session_id` | string | 是 | 客户端生成的全局唯一会话 id，ULID 风格：`sess_` 前缀 + 26 位 Crockford Base32，如 `sess_01J8H2K3M4N5P6Q7R8S9T0AB` |
 | `created_at` | string | 是 | 采集时间，ISO 8601 UTC（`Z` 后缀） |
+| `duration_ms` | integer | 是 | 会话总时长（毫秒）；纯 IMU 会话（无视频）同样必须填写 |
 | `device` | object | 是 | 采集设备：`model`、`os` |
 | `app` | object | 是 | 产生会话的应用：`name`、`version` |
 | `pipeline` | string | 是 | 处理本会话的管线档位：`standard-vision` / `standard-imu` / `pro-fusion` / `pro-stereo` / `max` |
@@ -235,11 +237,11 @@ Authorization: Bearer <access_token>
 
 **`pose2d`：** `model`（姿态模型 id）、`frame_rate`、`frames[]`。每帧：`frame_index`、`timestamp_ms`（相对会话起点毫秒）、`confidence`（整帧置信度）、`keypoints[]`（固定 33 点，MediaPipe BlazePose 拓扑；每点 `name` / `x` / `y` / `visibility`，归一化坐标，缺失点 `visibility=0`）。**2D 序列不含 `z`；3D 姿态经 `extensions` 传输。**
 
-**`imu`：** `cap_id`（batana-cap 设备 id）、`sample_rate_hz`、`samples[]`。每样本：`timestamp_ms`、`accel`（`[x, y, z]`，m/s²）、`gyro`（`[x, y, z]`，rad/s）。
+**`imu`：** `cap_id`（batana-cap 设备 id，值为广播名 `BATANA-CAP-xx` 的 `xx` 部分，即 MAC 后两字节的大写十六进制，如 `"04A2"`；无前缀、不转小写）、`sample_rate_hz`、`clock_anchor`（可选；pro-fusion / max 必填——时钟锚点，含 `device_ts_us`（拼接回绕后 64 位单调时钟，µs）、`host_time_utc`、`offset_ms`、`drift_ppm`）、`samples[]`。每样本：`timestamp_ms`、`accel`（`[x, y, z]`，m/s²）、`gyro`（`[x, y, z]`，rad/s）。
 
 **`phases`：** `granularity`（`fine` / `coarse`）、`segments[]`（`phase` / `start_ms` / `end_ms`，时间轴与 video / imu 同原点）。
 
-**`metrics`：** `capabilities`（本次实际产出的能力 id 数组，必填）、`scores`、各能力指标（`bat_speed_mps`、`swing_count`、`tempo_ratio` 等）、`details`（档位增强指标）。
+**`metrics`：** `capabilities`（本次实际产出的能力 id 数组，必填）、`scores`、各能力指标（`bat_speed_mps`、`swing_count`、`tempo_ratio` 等）、`details`（档位增强指标）。sync-api 侧上传必填；本地仅采集未分析时可缺失（与 session-schema 裁决措辞一致）。
 
 **评分语义：** `metrics.scores` 固定为 `{ speed, angle, coordination, overall }`，均为 0–100，对齐 core 的能力维度语义；`overall` 为综合评分，聚合与展示一律使用 `overall`。按阶段评分（stance / load / swing / follow_through 维度）属 core 未登记字段，不在 v1 范围内，如需试验放入 `extensions`。
 
@@ -249,8 +251,9 @@ Authorization: Bearer <access_token>
 {
   "schema_version": "1.0",
   "meta": {
-    "session_id": "ses_01J900A1B2C3D4E5F6G7H8J9K0",
+    "session_id": "sess_01J900A1B2C3D4E5F6G7H8J9K0",
     "created_at": "2026-09-17T08:25:00Z",
+    "duration_ms": 1850,
     "device": { "model": "iPhone 16 Pro", "os": "iOS 19.0" },
     "app": { "name": "batana", "version": "0.1.0" },
     "pipeline": "standard-vision",
@@ -280,7 +283,7 @@ Authorization: Bearer <access_token>
     ]
   },
   "imu": {
-    "cap_id": "cap_04a2",
+    "cap_id": "04A2",
     "sample_rate_hz": 200,
     "samples": [
       { "timestamp_ms": 0, "accel": [0.12, -9.78, 0.45], "gyro": [0.01, 0.02, -0.15] }
@@ -310,7 +313,7 @@ Authorization: Bearer <access_token>
 
 ```json
 {
-  "session_id": "ses_01J900A1B2C3D4E5F6G7H8J9K0",
+  "session_id": "sess_01J900A1B2C3D4E5F6G7H8J9K0",
   "content_hash": "sha256:3b8f1d...",
   "received_at": "2026-09-17T08:30:12Z"
 }
@@ -352,7 +355,7 @@ Authorization: Bearer <access_token>
 {
   "sessions": [
     {
-      "session_id": "ses_01J900A1B2C3D4E5F6G7H8J9K0",
+      "session_id": "sess_01J900A1B2C3D4E5F6G7H8J9K0",
       "created_at": "2026-09-17T08:25:00Z",
       "duration_ms": 1850,
       "pipeline": "standard-vision",
@@ -457,6 +460,8 @@ Authorization: Bearer <access_token>
 - 会话数据如需云端重分析，由 web 侧异步调用 batana-core，不在本契约范围内。
 
 ## 变更记录
+
+- **1.0（2026-09-17）：定稿冻结**——补 `duration_ms`/`calibration`/`clock_anchor`、统一 `cap_id`/`session_id`/`metrics` 必填性，此后主版本内向后兼容。
 
 ### 1.0-draft（2026-09-17）— 评审整改
 
